@@ -1,0 +1,15 @@
+#!/usr/bin/bash
+
+as -o obj/$1.o src/$1.s
+if [ $? -eq 0]; then
+    echo "Created the obj file"
+else
+    echo "Could not create obj file"
+fi
+
+ld -o bin/$1 obj/$1.o
+if [ $? -eq 0]; then
+    echo "Created the binary file"
+else
+    echo "Could not create binary file"
+fi
