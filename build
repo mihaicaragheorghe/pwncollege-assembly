@@ -1,6 +1,13 @@
 #!/usr/bin/bash
 
-as -o obj/$1.o src/$1.s
+SRC_FILE=$(find src -type f -name "$1.s" | head -n 1)
+
+if [ -z "$SRC_FILE" ]; then
+    echo "Could not find $1.s in src or its subdirectories."
+    exit 1
+fi
+
+as -o obj/$1.o "$SRC_FILE"
 if [ $? -eq 0]; then
     echo "Created the obj file"
 else
