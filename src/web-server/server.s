@@ -71,7 +71,7 @@ parent:
     jmp close_sock
 
 child:
-    # Close the socket
+    # Close the listening socket
     mov rdi, r9
     mov rax, 3
     syscall
@@ -81,39 +81,33 @@ child:
 
 read:
     lea rsi, req_buffer                 # the buffer to read into
-    mov rdx, 1024                       # buffer size
+    mov rdx, [req_packet_len]           # buffer size
     mov rax, 0                          # syscall for read
     syscall
 
     test rax, rax
     js exit_fail
 
-# Find first space (skip "GET ")
-find_first_space:
-    mov al, byte [rsi]
-    cmp al, ' '
-    je path_start_found
-    inc rsi
-    jmp find_first_space
+req_type:
+    mov eax, dword ptr [rsi]            # First 4 bytes of the read buffer
+    cmp eax, 0x20544547                 # Check if equal "GET "
+    je GET
+    cmp eax, 0x54534f50                 # Check if equal "POST"
+    je POST
+    jmp exit_fail
 
-path_start_found:
-    add rsi, 2                          # move to first char of path, todo: find out why 2 is working and 1 not
-    mov rbx, rsi                        # save start_ptr of path
+GET:
+    call parse_path
+    call open_file
+    jmp open_file
 
-# Find second space (end of path)
-find_second_space:
-    mov al, byte [rsi]
-    cmp al, ' '
-    je path_end_found
-    inc rsi
-    jmp find_second_space
-
-path_end_found:
-    mov rcx, rsi                        # end_ptr
-    sub rcx, rbx                        # rcx = length of path
+POST:
+    call parse_path                     # rbx = file path pointer; rcx = file path len
+    call parse_content                  # r8  = content pointer
+    call str_len                        # r11 = content len
+    jmp open_write_file
 
 open_file:
-    mov byte ptr [rbx + rcx + 1], 0     # null terminate the path, ?this should work without the +1
     mov rdi, rbx                        # file path
     mov rsi, 0                          # O_RDONLY
     mov rax, 2                          # syscall open
@@ -121,7 +115,6 @@ open_file:
 
     test rax, rax
     js exit_fail
-
 
 read_file:
     mov rdi, rax                        # the file description returned by open()
@@ -135,7 +128,7 @@ read_file:
 
     mov r13, rax                        # number of bytes read from file
 
-close_file:
+    # close_file
     mov rax, 3
     syscall
 
@@ -160,10 +153,94 @@ write_content:
     js exit_fail
     jmp exit_success
 
+open_write_file:
+    mov rdi, rbx                        # file path
+    mov rsi, 0x41                       # flags: O_WRONLY | O_CREAT = 0x1 | 0x40 -> 0x241
+    mov rdx, 0777                       # permissions: rw-r--r-- (octal)
+    mov rax, 2                          # syscall open
+    syscall
+
+    test rax, rax
+    js exit_fail
+
+write_file:
+    mov rdi, rax                        # the file description returned by open()
+    mov rsi, r8                         # pointer to body
+    mov rdx, r11                        # body length
+    mov rax, 1                          # syscall for write
+    syscall
+
+    test rax, rax
+    js exit_fail
+
+    # close_file
+    mov rax, 3
+    syscall
+
+write_response:
+    mov rdi, r10                        # sockfd of the connection
+    lea rsi, write_static               # the buffer to write from
+    mov rdx, 19                         # the size of the buffer
+    mov rax, 1                          # write syscall
+    syscall
+
+    test rax, rax
+    js exit_fail
+    jmp exit_success
+
 close_sock:
     mov rax, 3
     syscall
     jmp accept
+
+parse_path:
+    # Find first space (skip verb)
+    mov rdi, rsi
+    find_first_space:
+        mov al, byte [rdi]
+        cmp al, ' '
+        je path_start_found
+        inc rdi
+        jmp find_first_space
+
+    path_start_found:
+        add rdi, 2                          # move to first char of path, todo: find out why 2 is working and 1 not
+        mov rbx, rdi                        # ! rbx = start of path
+
+    # Find second space (end of path)
+    find_second_space:
+        mov al, byte [rdi]
+        cmp al, ' '
+        je path_end_found
+        inc rdi
+        jmp find_second_space
+
+    path_end_found:
+        mov rcx, rdi                        # end_ptr
+        sub rcx, rbx                        # ! rcx = length of path
+        mov byte ptr [rbx + rcx + 1], 0     # null terminate the path, ?this should work without the +1
+        ret
+
+parse_content:
+    find_dcrlf_loop:
+        cmp dword ptr [rsi], 0x0a0d0a0d     # search double CRLF
+        je content_start
+        inc rsi
+        jmp find_dcrlf_loop
+
+    content_start:
+        add rsi, 4                          # skip over the \r\n\r\n
+        mov r8, rsi                         # r8 = pointer to the body
+        ret
+
+str_len:
+    xor r11, r11
+    str_len_loop:
+        mov al, byte ptr [rsi + r11]        # Load 1 byte
+        inc r11
+        cmp al, 0x00                        # Check if it's null
+        jne str_len_loop
+        ret
 
 # exit(0)
 exit_success:
@@ -178,6 +255,8 @@ exit_fail:
     syscall
 
 .section .data
-    req_buffer: .space 1024
-    file_buffer: .space 2048
-    write_static: .string "HTTP/1.0 200 OK\r\n\r\n"
+    req_buffer:     .space 1024
+    req_packet_len: .quad 0x0000000000000400
+    file_buffer:    .space 2048
+    write_static:   .string "HTTP/1.0 200 OK\r\n\r\n"
+    double_cr_lf:   .string "\r\n\r\n"
